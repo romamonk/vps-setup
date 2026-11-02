@@ -1,0 +1,22 @@
+---
+- name: Перезагрузить настроенный VPS при необходимости
+  hosts: vps
+  become: true
+  tasks:
+    - name: Проверить административный доступ и recovery
+      ansible.builtin.assert:
+        that:
+          - ansible_user == admin_user
+          - recovery_access_confirmed | bool
+    - name: Проверить ключевые подключения перед reboot
+      ansible.builtin.import_tasks: ../tasks/check_access.yml
+    - name: Проверить необходимость reboot
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+    - name: Перезагрузить и дождаться восстановления SSH и sudo
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+        post_reboot_delay: 10
+        test_command: id -u
+      when: reboot_required.stat.exists

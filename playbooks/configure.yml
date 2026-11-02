@@ -1,0 +1,109 @@
+---
+- name: Настроить окружение через нового администратора
+  hosts: vps
+  become: true
+  tasks:
+    - name: Не выдавать отсутствующую настройку Docker за выполненную
+      ansible.builtin.assert:
+        that: not install_docker
+        fail_msg: Docker пока не реализован; оставьте install_docker=false.
+    - name: Проверить повышение прав
+      ansible.builtin.command: id -u
+      register: admin_uid
+      changed_when: false
+      failed_when: admin_uid.stdout != '0'
+    - name: Установить основные инструменты и защиту
+      ansible.builtin.apt:
+        name: >-
+          {{ ['git', 'tmux', 'curl', 'ca-certificates', 'jq', 'ripgrep', 'unzip',
+              'build-essential', 'acl', 'ufw', 'unattended-upgrades', 'python3']
+             + (['fail2ban'] if install_fail2ban else [])
+             + (['golang-go'] if install_go else [])
+             + (['python3-venv', 'python3-pip'] if install_python_tools else [])
+             + (['nodejs', 'npm'] if install_nodejs else []) }}
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Применить доступные обновления пакетов без смены релиза ОС
+      ansible.builtin.apt:
+        upgrade: safe
+      async: 1800
+      poll: 10
+    - name: Создать рабочий каталог
+      ansible.builtin.file:
+        path: '{{ agent_workspace_dir }}'
+        state: directory
+        owner: '{{ agent_user }}'
+        group: '{{ agent_user }}'
+        mode: '0700'
+    - name: Настроить ежедневные security updates без автоматической перезагрузки
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/99-vps-updates
+        mode: '0644'
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+          #clear Unattended-Upgrade::Allowed-Origins;
+          Unattended-Upgrade::Allowed-Origins {
+            "${distro_id}:${distro_codename}-security";
+            "${distro_id}ESMApps:${distro_codename}-apps-security";
+            "${distro_id}ESM:${distro_codename}-infra-security";
+          };
+          Unattended-Upgrade::Automatic-Reboot "false";
+    - name: Включить таймеры обновлений
+      ansible.builtin.systemd_service:
+        name: '{{ item }}'
+        enabled: true
+        state: started
+      loop: [apt-daily.timer, apt-daily-upgrade.timer]
+    - name: Настроить sshd jail на systemd journal
+      ansible.builtin.copy:
+        dest: /etc/fail2ban/jail.d/vps-sshd.local
+        mode: '0644'
+        content: |
+          [sshd]
+          enabled = true
+          backend = systemd
+          port = {{ ssh_port }}
+          maxretry = 5
+          bantime = 3600
+      when: install_fail2ban
+      notify: Перезапустить fail2ban
+    - name: Включить fail2ban
+      ansible.builtin.systemd_service:
+        name: fail2ban
+        enabled: true
+        state: started
+      when: install_fail2ban
+    - name: Настроить tmux
+      ansible.builtin.copy:
+        dest: '/home/{{ agent_user }}/.tmux.conf'
+        owner: '{{ agent_user }}'
+        group: '{{ agent_user }}'
+        mode: '0644'
+        content: |
+          set -g history-limit 50000
+          set -g mouse on
+          set -g status-interval 10
+    - name: Установить Claude Code
+      ansible.builtin.import_tasks: ../tasks/claude.yml
+      when: install_claude_code
+    - name: Проверить рабочую сессию tmux
+      ansible.builtin.command: tmux has-session -t claude
+      become: true
+      become_user: '{{ agent_user }}'
+      register: tmux_session
+      changed_when: false
+      failed_when: tmux_session.rc not in [0, 1]
+    - name: Создать рабочую сессию без автозапуска Claude
+      ansible.builtin.command:
+        argv: [tmux, new-session, -d, -s, claude, -c, '{{ agent_workspace_dir }}']
+      become: true
+      become_user: '{{ agent_user }}'
+      when: tmux_session.rc != 0
+      changed_when: true
+  handlers:
+    - name: Перезапустить fail2ban
+      ansible.builtin.systemd_service:
+        name: fail2ban
+        state: restarted

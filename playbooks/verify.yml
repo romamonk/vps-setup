@@ -1,0 +1,60 @@
+---
+- name: Проверить итоговое состояние VPS
+  hosts: vps
+  become: true
+  tasks:
+    - name: Проверить независимые подключения по ключу
+      ansible.builtin.import_tasks: ../tasks/check_access.yml
+    - name: Проверить группы agent
+      ansible.builtin.command: 'id -nG {{ agent_user }}'
+      register: agent_groups
+      changed_when: false
+      failed_when: "'sudo' in agent_groups.stdout.split() or 'docker' in agent_groups.stdout.split()"
+    - name: Проверить отсутствие любых sudo-разрешений agent
+      ansible.builtin.command: 'sudo -l -U {{ agent_user }}'
+      environment:
+        LC_ALL: C
+      register: agent_sudo
+      changed_when: false
+      failed_when: "'is not allowed to run sudo' not in (agent_sudo.stdout + agent_sudo.stderr)"
+    - name: Проверить недоступность Docker socket для agent
+      ansible.builtin.command: test -w /var/run/docker.sock
+      become: true
+      become_user: '{{ agent_user }}'
+      register: docker_access
+      changed_when: false
+      failed_when: docker_access.rc != 1
+    - name: Проверить SSH
+      ansible.builtin.command: /usr/sbin/sshd -T
+      register: ssh_settings
+      changed_when: false
+      failed_when: >-
+        'permitrootlogin no' not in ssh_settings.stdout_lines or
+        'passwordauthentication no' not in ssh_settings.stdout_lines or
+        'kbdinteractiveauthentication no' not in ssh_settings.stdout_lines
+    - name: Проверить UFW
+      ansible.builtin.command: ufw status verbose
+      register: firewall_status
+      changed_when: false
+      failed_when: "'Status: active' not in firewall_status.stdout or 'deny (incoming)' not in firewall_status.stdout"
+    - name: Проверить фактическую конфигурацию APT
+      ansible.builtin.command: apt-config dump
+      register: apt_settings
+      changed_when: false
+      failed_when: >-
+        'APT::Periodic::Unattended-Upgrade "1";' not in apt_settings.stdout or
+        'APT::Periodic::Update-Package-Lists "1";' not in apt_settings.stdout or
+        'Unattended-Upgrade::Automatic-Reboot "false";' not in apt_settings.stdout
+    - name: Проверить sshd jail
+      ansible.builtin.command: fail2ban-client status sshd
+      changed_when: false
+      when: install_fail2ban
+    - name: Проверить Claude
+      ansible.builtin.command: '/home/{{ agent_user }}/.local/bin/claude --version'
+      become: true
+      become_user: '{{ agent_user }}'
+      changed_when: false
+      when: install_claude_code
+    - name: Показать слушающие порты
+      ansible.builtin.command: ss -lntup
+      changed_when: false

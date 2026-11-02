@@ -1,0 +1,32 @@
+---
+- name: Создать каталог проверенного установщика
+  ansible.builtin.file:
+    path: /usr/local/lib/vps-setup
+    state: directory
+    mode: '0755'
+- name: Скачать официальный установщик с проверенной контрольной суммой
+  ansible.builtin.get_url:
+    url: https://claude.ai/install.sh
+    dest: /usr/local/lib/vps-setup/claude-install.sh
+    checksum: 'sha256:{{ claude_installer_sha256 }}'
+    mode: '0755'
+- name: Установить stable Claude под agent
+  ansible.builtin.command:
+    argv: [bash, /usr/local/lib/vps-setup/claude-install.sh, stable]
+    creates: '/home/{{ agent_user }}/.local/bin/claude'
+  become: true
+  become_user: '{{ agent_user }}'
+  environment:
+    HOME: '/home/{{ agent_user }}'
+- name: Добавить launcher в PATH интерактивного shell
+  ansible.builtin.lineinfile:
+    path: '/home/{{ agent_user }}/.bashrc'
+    line: 'export PATH="$HOME/.local/bin:$PATH"'
+    owner: '{{ agent_user }}'
+    group: '{{ agent_user }}'
+    mode: '0644'
+- name: Проверить версию Claude
+  ansible.builtin.command: '/home/{{ agent_user }}/.local/bin/claude --version'
+  become: true
+  become_user: '{{ agent_user }}'
+  changed_when: false

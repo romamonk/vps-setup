@@ -1,0 +1,142 @@
+---
+- name: Защитить SSH и включить firewall после проверки доступа
+  hosts: vps
+  become: true
+  tasks:
+    - name: Проверить обязательные условия
+      ansible.builtin.assert:
+        that:
+          - recovery_access_confirmed | bool
+          - ansible_user == admin_user
+          - ssh_allowed_cidrs | length > 0
+          - ssh_port | int == ansible_port | default(22) | int
+          - ssh_tcp_forwarding in ['yes', 'local', 'no']
+        fail_msg: Подтвердите recovery и CIDR; запускайте через admin на текущем SSH-порту.
+    - name: Проверить новые подключения
+      ansible.builtin.import_tasks: ../tasks/check_access.yml
+    - name: Определить адрес текущего SSH-клиента
+      ansible.builtin.command: printenv SSH_CONNECTION
+      become: false
+      register: harden_connection
+      changed_when: false
+    - name: Проверить CIDR и присутствие текущего клиента в allowlist
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -c
+          - >-
+            import ipaddress,json,sys;
+            networks=[ipaddress.ip_network(c) for c in json.loads(sys.argv[2])];
+            sys.exit(0 if any(ipaddress.ip_address(sys.argv[1]) in n for n in networks) else 1)
+          - '{{ harden_connection.stdout.split()[0] }}'
+          - '{{ ssh_allowed_cidrs | to_json }}'
+      changed_when: false
+    - name: Проверить sudo администратора
+      ansible.builtin.command: id -u
+      register: harden_uid
+      changed_when: false
+      failed_when: harden_uid.stdout != '0'
+    - name: Сохранить исходную SSH-конфигурацию один раз
+      ansible.builtin.copy:
+        src: /etc/ssh/sshd_config
+        dest: /etc/ssh/sshd_config.before-vps-setup
+        remote_src: true
+        force: false
+        mode: '0600'
+    - name: Применить и проверить SSH-конфигурацию
+      block:
+        - name: Записать управляемый SSH drop-in
+          ansible.builtin.copy:
+            dest: /etc/ssh/sshd_config.d/00-vps-setup.conf
+            mode: '0600'
+            content: |
+              PermitRootLogin no
+              PasswordAuthentication no
+              KbdInteractiveAuthentication no
+              PubkeyAuthentication yes
+              AuthenticationMethods publickey
+              X11Forwarding no
+              AllowAgentForwarding no
+              AllowTcpForwarding {{ ssh_tcp_forwarding }}
+              PermitEmptyPasswords no
+          register: ssh_dropin
+        - name: Подключить drop-in раньше остальных директив
+          ansible.builtin.lineinfile:
+            path: /etc/ssh/sshd_config
+            line: Include /etc/ssh/sshd_config.d/00-vps-setup.conf
+            insertbefore: BOF
+            validate: /usr/sbin/sshd -t -f %s
+          register: ssh_include
+        - name: Проверить синтаксис SSH
+          ansible.builtin.command: /usr/sbin/sshd -t
+          changed_when: false
+        - name: Проверить эффективные значения с контекстом Match
+          ansible.builtin.command:
+            argv:
+              - /usr/sbin/sshd
+              - -T
+              - -C
+              - 'user={{ item }},host={{ ansible_host }},addr={{ harden_connection.stdout.split()[0] }}'
+          loop: ['{{ admin_user }}', '{{ agent_user }}', root]
+          register: ssh_effective
+          changed_when: false
+          failed_when: >-
+            'permitrootlogin no' not in ssh_effective.stdout_lines or
+            'passwordauthentication no' not in ssh_effective.stdout_lines or
+            'kbdinteractiveauthentication no' not in ssh_effective.stdout_lines or
+            'pubkeyauthentication yes' not in ssh_effective.stdout_lines or
+            'authenticationmethods publickey' not in ssh_effective.stdout_lines
+        - name: Перечитать проверенную конфигурацию SSH
+          ansible.builtin.systemd_service:
+            name: ssh
+            state: reloaded
+          when: ssh_dropin.changed or ssh_include.changed
+        - name: Проверить доступ после reload
+          ansible.builtin.import_tasks: ../tasks/check_access.yml
+      rescue:
+        - name: Восстановить исходную конфигурацию
+          ansible.builtin.copy:
+            src: /etc/ssh/sshd_config.before-vps-setup
+            dest: /etc/ssh/sshd_config
+            remote_src: true
+            mode: '0600'
+        - name: Удалить неуспешный drop-in
+          ansible.builtin.file:
+            path: /etc/ssh/sshd_config.d/00-vps-setup.conf
+            state: absent
+        - name: Проверить восстановленную конфигурацию
+          ansible.builtin.command: /usr/sbin/sshd -t
+          changed_when: false
+        - name: Перечитать исходную конфигурацию
+          ansible.builtin.systemd_service:
+            name: ssh
+            state: reloaded
+        - name: Остановить настройку до firewall
+          ansible.builtin.fail:
+            msg: Проверка SSH не прошла; исходная конфигурация восстановлена.
+    - name: Разрешить SSH до включения firewall
+      community.general.ufw:
+        rule: allow
+        port: '{{ ssh_port | string }}'
+        proto: tcp
+        from_ip: '{{ item }}'
+      loop: '{{ ssh_allowed_cidrs }}'
+    - name: Разрешить явно выбранные публичные TCP-порты
+      community.general.ufw:
+        rule: allow
+        port: '{{ item | string }}'
+        proto: tcp
+      loop: '{{ public_tcp_ports }}'
+    - name: Запретить остальные входящие соединения
+      community.general.ufw:
+        direction: incoming
+        policy: deny
+    - name: Разрешить исходящие соединения
+      community.general.ufw:
+        direction: outgoing
+        policy: allow
+    - name: Включить UFW
+      community.general.ufw:
+        state: enabled
+    - name: Проверить подключения после firewall
+      ansible.builtin.import_tasks: ../tasks/check_access.yml

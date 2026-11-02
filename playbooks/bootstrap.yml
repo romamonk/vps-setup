@@ -1,0 +1,70 @@
+---
+- name: Создать пользователей через исходный административный доступ
+  hosts: vps
+  become: true
+  tasks:
+    - name: Проверить параметры до изменения сервера
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Ubuntu'
+          - ansible_facts['distribution_version'] == '24.04'
+          - admin_user is match('^[a-z_][a-z0-9_-]*$')
+          - agent_user is match('^[a-z_][a-z0-9_-]*$')
+          - admin_user != agent_user
+          - admin_user != 'root'
+          - agent_user != 'root'
+          - admin_authorized_keys | length > 0
+          - agent_authorized_keys | length > 0
+          - ssh_port | int == ansible_port | default(22) | int
+        fail_msg: Заполните inventory; смена SSH-порта этим bootstrap не поддерживается.
+    - name: Установить sudo и ACL для непривилегированного become
+      ansible.builtin.apt:
+        name: [sudo, acl]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Создать пользователей
+      ansible.builtin.user:
+        name: "{{ item }}"
+        shell: /bin/bash
+        create_home: true
+      loop: ['{{ admin_user }}', '{{ agent_user }}']
+    - name: Ограничить права домашних каталогов
+      ansible.builtin.file:
+        path: '/home/{{ item }}'
+        state: directory
+        owner: '{{ item }}'
+        group: '{{ item }}'
+        mode: '0700'
+      loop: ['{{ admin_user }}', '{{ agent_user }}']
+    - name: Добавить администратора в sudo
+      ansible.builtin.user:
+        name: '{{ admin_user }}'
+        groups: sudo
+        append: true
+    - name: Удалить все дополнительные группы у agent
+      ansible.builtin.user:
+        name: '{{ agent_user }}'
+        groups: ''
+        append: false
+    - name: Установить публичные ключи без удаления существующих
+      ansible.posix.authorized_key:
+        user: '{{ item.user }}'
+        key: "{{ item['keys'] | join('\n') }}"
+        state: present
+      loop:
+        - user: '{{ admin_user }}'
+          keys: '{{ admin_authorized_keys }}'
+        - user: '{{ agent_user }}'
+          keys: '{{ agent_authorized_keys }}'
+      no_log: true
+    - name: Настроить выбранную политику sudo администратора
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/90-vps-admin
+        content: "{{ admin_user }} ALL=(ALL:ALL) {{ 'NOPASSWD: ' if admin_passwordless_sudo else '' }}ALL\n"
+        owner: root
+        group: root
+        mode: '0440'
+        validate: /usr/sbin/visudo -cf %s
+    - name: Проверить новые подключения по ключу
+      ansible.builtin.import_tasks: ../tasks/check_access.yml

@@ -1,0 +1,33 @@
+---
+- name: Проверить отдельные SSH-подключения без пароля и multiplexing
+  ansible.builtin.command:
+    argv:
+      - ssh
+      - -o
+      - BatchMode=yes
+      - -o
+      - StrictHostKeyChecking=yes
+      - -o
+      - ControlMaster=no
+      - -o
+      - ControlPath=none
+      - -o
+      - IdentitiesOnly=yes
+      - -o
+      - ConnectTimeout=10
+      - -i
+      - '{{ item.key }}'
+      - -p
+      - '{{ ssh_port | string }}'
+      - '{{ item.user }}@{{ ansible_host }}'
+      - id -un
+  loop:
+    - user: '{{ admin_user }}'
+      key: '{{ admin_private_key_file }}'
+    - user: '{{ agent_user }}'
+      key: '{{ agent_private_key_file }}'
+  register: access_check
+  failed_when: access_check.rc != 0 or access_check.stdout != item.user
+  changed_when: false
+  delegate_to: localhost
+  become: false

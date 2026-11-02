@@ -1,9 +1,4 @@
 # Playbooks
 
-Планируемые точки входа:
-
-- `bootstrap.yml` — preflight, пользователи, проверка входа, SSH и firewall.
-- `configure.yml` — обновления, dev tools, tmux и Claude Code.
-- `docker.yml` — опциональная установка Docker под управлением администратора.
-
-Playbooks ещё не реализованы. До их появления команд применения нет.
+Порядок: `bootstrap.yml`, переход на admin, `configure.yml`, `harden.yml`,
+`verify.yml`. Команды и ограничения приведены в корневом README.

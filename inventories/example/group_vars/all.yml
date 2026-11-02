@@ -16,3 +16,13 @@ install_python_tools: false
 install_nodejs: false
 
 agent_workspace_dir: "/home/{{ agent_user }}/workspace"
+
+# Подтвердить после проверки recovery-консоли у провайдера.
+recovery_access_confirmed: false
+# Явное решение о sudo без пароля для admin. У agent sudo нет.
+admin_passwordless_sudo: true
+# Ключи проверки могут отличаться; приватные ключи остаются локально.
+admin_private_key_file: "{{ lookup('env', 'HOME') }}/.ssh/id_ed25519"
+agent_private_key_file: "{{ admin_private_key_file }}"
+ssh_tcp_forwarding: 'yes'
+claude_installer_sha256: 3a68d3406cf674e17bed1733a4dcf37805e2e47d87417700007d7e1aa766a944
