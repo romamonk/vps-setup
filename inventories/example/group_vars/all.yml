@@ -1,0 +1,18 @@
+---
+admin_user: admin
+agent_user: agent
+admin_authorized_keys: []
+agent_authorized_keys: []
+
+ssh_port: 22
+ssh_allowed_cidrs: []
+public_tcp_ports: []
+
+install_docker: false
+install_fail2ban: true
+install_claude_code: true
+install_go: false
+install_python_tools: false
+install_nodejs: false
+
+agent_workspace_dir: "/home/{{ agent_user }}/workspace"

@@ -1,0 +1,15 @@
+Host vps-admin
+  HostName vps.example.invalid
+  User admin
+  Port 22
+  IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
+  ForwardAgent no
+
+Host vps-agent
+  HostName vps.example.invalid
+  User agent
+  Port 22
+  IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
+  ForwardAgent no
